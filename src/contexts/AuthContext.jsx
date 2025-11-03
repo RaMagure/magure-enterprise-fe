@@ -1,4 +1,10 @@
-import { createContext, useContext, useState, useEffect, useCallback } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+} from "react";
 
 const AuthContext = createContext(null);
 
@@ -44,7 +50,7 @@ export const AuthProvider = ({ children }) => {
       const response = await fetch(`${API_BASE_URL}/api/user/user-info/`, {
         method: "GET",
         headers: {
-          "Authorization": `Bearer ${token}`,
+          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
         credentials: "include",
@@ -67,80 +73,96 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   // Login function
-  const login = useCallback(async (email, password) => {
-    try {
-      setIsLoading(true);
-      const response = await fetch(`${API_BASE_URL}/api/user/login-user/`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify({ email, password }),
-      });
+  const login = useCallback(
+    async (email, password) => {
+      try {
+        setIsLoading(true);
+        const response = await fetch(`${API_BASE_URL}/api/user/login-user/`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          credentials: "include",
+          body: JSON.stringify({ email, password }),
+        });
 
-      const data = await response.json();
+        const data = await response.json();
 
-      if (response.ok) {
-        setAccessToken(data.access);
-        await fetchUserProfile(data.access);
-        return { success: true, data };
-      } else {
-        return { 
-          success: false, 
-          error: data.error || "Login failed" 
+        if (response.ok) {
+          setAccessToken(data.access);
+          const profileResult = await fetchUserProfile(data.access);
+          return { success: true, data };
+        } else {
+          return {
+            success: false,
+            error: data.error || data.message || "Login failed",
+          };
+        }
+      } catch (error) {
+        console.error("Login error:", error);
+
+        // Check if it's a CORS error
+        if (error.message.includes("Failed to fetch")) {
+          return {
+            success: false,
+            error:
+              "CORS error: Please configure your Django backend to allow requests from this domain. Check CORS_SETUP.md for instructions.",
+          };
+        }
+
+        return {
+          success: false,
+          error: "Network error. Please try again.",
         };
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error) {
-      console.error("Login error:", error);
-      return { 
-        success: false, 
-        error: "Network error. Please try again." 
-      };
-    } finally {
-      setIsLoading(false);
-    }
-  }, [fetchUserProfile]);
+    },
+    [fetchUserProfile]
+  );
 
   // Signup function
-  const signup = useCallback(async (email, password, additionalData = {}) => {
-    try {
-      setIsLoading(true);
-      const response = await fetch(`${API_BASE_URL}/api/user/signup-user/`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify({ 
-          email, 
-          password, 
-          ...additionalData 
-        }),
-      });
+  const signup = useCallback(
+    async (email, password, additionalData = {}) => {
+      try {
+        setIsLoading(true);
+        const response = await fetch(`${API_BASE_URL}/api/user/signup-user/`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          credentials: "include",
+          body: JSON.stringify({
+            email,
+            password,
+            ...additionalData,
+          }),
+        });
 
-      const data = await response.json();
+        const data = await response.json();
 
-      if (response.ok) {
-        setAccessToken(data.access);
-        await fetchUserProfile(data.access);
-        return { success: true, data };
-      } else {
-        return { 
-          success: false, 
-          error: data.error || "Signup failed" 
+        if (response.ok) {
+          setAccessToken(data.access);
+          await fetchUserProfile(data.access);
+          return { success: true, data };
+        } else {
+          return {
+            success: false,
+            error: data.error || "Signup failed",
+          };
+        }
+      } catch (error) {
+        console.error("Signup error:", error);
+        return {
+          success: false,
+          error: "Network error. Please try again.",
         };
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error) {
-      console.error("Signup error:", error);
-      return { 
-        success: false, 
-        error: "Network error. Please try again." 
-      };
-    } finally {
-      setIsLoading(false);
-    }
-  }, [fetchUserProfile]);
+    },
+    [fetchUserProfile]
+  );
 
   // Logout function
   const logout = useCallback(async () => {
@@ -150,7 +172,7 @@ export const AuthProvider = ({ children }) => {
         await fetch(`${API_BASE_URL}/api/user/logout-user/`, {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${accessToken}`,
+            Authorization: `Bearer ${accessToken}`,
             "Content-Type": "application/json",
           },
           credentials: "include",
@@ -167,51 +189,54 @@ export const AuthProvider = ({ children }) => {
   }, [accessToken]);
 
   // Update user profile
-  const updateProfile = useCallback(async (profileData) => {
-    try {
-      if (!accessToken) {
-        throw new Error("Not authenticated");
-      }
+  const updateProfile = useCallback(
+    async (profileData) => {
+      try {
+        if (!accessToken) {
+          throw new Error("Not authenticated");
+        }
 
-      const response = await fetch(`${API_BASE_URL}/api/user/user-info/`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify(profileData),
-      });
+        const response = await fetch(`${API_BASE_URL}/api/user/user-info/`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          credentials: "include",
+          body: JSON.stringify(profileData),
+        });
 
-      const data = await response.json();
+        const data = await response.json();
 
-      if (response.ok) {
-        setUser(data.user);
-        return { success: true, data };
-      } else {
-        return { 
-          success: false, 
-          error: data.error || "Profile update failed" 
+        if (response.ok) {
+          setUser(data.user);
+          return { success: true, data };
+        } else {
+          return {
+            success: false,
+            error: data.error || "Profile update failed",
+          };
+        }
+      } catch (error) {
+        console.error("Profile update error:", error);
+        return {
+          success: false,
+          error: "Network error. Please try again.",
         };
       }
-    } catch (error) {
-      console.error("Profile update error:", error);
-      return { 
-        success: false, 
-        error: "Network error. Please try again." 
-      };
-    }
-  }, [accessToken]);
+    },
+    [accessToken]
+  );
 
   // Initialize auth state on mount
   useEffect(() => {
     const initializeAuth = async () => {
       try {
         setIsLoading(true);
-        
+
         // Try to refresh token to check if user is logged in
         const token = await refreshAccessToken();
-        
+
         if (token) {
           await fetchUserProfile(token);
         }
@@ -258,11 +283,7 @@ export const AuthProvider = ({ children }) => {
     setIsAuthenticated,
   };
 
-  return (
-    <AuthContext.Provider value={value}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
 // Custom hook to use auth context
