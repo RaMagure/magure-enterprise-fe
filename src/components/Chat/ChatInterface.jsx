@@ -23,7 +23,9 @@ import {
 import LoadingMessage from "./LoadingMessage";
 import ModelSelector from "./ModelSelector";
 import { useModelSelection } from "../../hooks";
-import logo from "../../assets/images/Magure-Logo.png";
+import chatApi from "../../services/chatApi";
+import { useChatStream } from "../../services/websocket";
+import { useAuth } from "../../contexts/AuthContext";
 
 const ChatInterface = () => {
   const [message, setMessage] = useState("");
@@ -41,7 +43,21 @@ const ChatInterface = () => {
   ]);
   const [isRecording, setIsRecording] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [chatId, setChatId] = useState(null);
   const messagesEndRef = useRef(null);
+  const { initializeChat, ResponseGenerator } = chatApi();
+  const { user, accessToken } = useAuth();
+
+  // WebSocket streaming state
+  const [streamingMessageId, setStreamingMessageId] = useState(null);
+  const {
+    isConnected: wsConnected,
+    isStreaming,
+    streamingMessage,
+    connectionError: wsError,
+    startStreaming,
+    stopStreaming,
+  } = useChatStream(user?.id || user?.user_id, accessToken);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -51,12 +67,38 @@ const ChatInterface = () => {
     scrollToBottom();
   }, [messages, isLoading]);
 
-  const handleSendMessage = () => {
+  // Cleanup WebSocket on unmount
+  useEffect(() => {
+    return () => {
+      if (chatId) {
+        stopStreaming();
+      }
+    };
+  }, [chatId, stopStreaming]);
+
+  // Log WebSocket connection status
+  useEffect(() => {
+    if (wsConnected) {
+      console.log("✅ WebSocket connected for real-time streaming");
+    } else if (wsError) {
+      console.error("❌ WebSocket connection error:", wsError);
+
+      // Show user-friendly error for authentication issues
+      if (wsError.includes("Authentication") || wsError.includes("403")) {
+        console.warn(
+          "💡 Tip: WebSocket requires authentication. Make sure you're logged in."
+        );
+      }
+    }
+  }, [wsConnected, wsError]);
+
+  const handleSendMessage = async () => {
     if (message.trim()) {
+      const userMessage = message.trim();
       const newMessage = {
         id: messages.length + 1,
         type: "user",
-        content: message,
+        content: userMessage,
         timestamp: new Date(),
         model: selectedModel,
       };
@@ -64,18 +106,148 @@ const ChatInterface = () => {
       setMessage("");
       setIsLoading(true);
 
-      // Simulate AI response based on selected model
-      setTimeout(() => {
-        const aiResponse = {
-          id: messages.length + 2,
-          type: "ai",
-          content: getModelResponse("greeting"),
-          timestamp: new Date(),
-          model: selectedModel,
-        };
-        setMessages((prev) => [...prev, aiResponse]);
+      // Create placeholder for streaming AI response
+      const aiMessageId = messages.length + 2;
+      setStreamingMessageId(aiMessageId);
+
+      const aiResponsePlaceholder = {
+        id: aiMessageId,
+        type: "ai",
+        content: "",
+        timestamp: new Date(),
+        model: selectedModel,
+        isStreaming: true,
+      };
+      setMessages((prev) => [...prev, aiResponsePlaceholder]);
+
+      try {
+        let currentChatId = chatId;
+
+        // Check if this is the first user message (chat not initialized)
+        if (!currentChatId) {
+          console.log("Initializing new chat session...");
+          // Initialize chat with the first message
+          const aiResponseData = await initializeChat(userMessage);
+
+          // Store the chat_id for subsequent messages
+          if (aiResponseData?.success && aiResponseData.chat_id) {
+            console.log("Chat initialized with ID:", aiResponseData.chat_id);
+            currentChatId = aiResponseData.chat_id;
+            setChatId(currentChatId);
+
+            // Start WebSocket streaming for this chat
+            startStreaming(currentChatId, {
+              onMessage: (chunk) => {
+                // Update the streaming message in real-time
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === aiMessageId
+                      ? { ...msg, content: msg.content + chunk }
+                      : msg
+                  )
+                );
+              },
+              onComplete: (fullResponse) => {
+                console.log("Stream complete, full response:", fullResponse);
+                // Mark message as complete
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === aiMessageId
+                      ? { ...msg, content: fullResponse, isStreaming: false }
+                      : msg
+                  )
+                );
+                setIsLoading(false);
+                setStreamingMessageId(null);
+              },
+              onError: (error) => {
+                console.error("Streaming error:", error);
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === aiMessageId
+                      ? {
+                          ...msg,
+                          content:
+                            "Error receiving response. Please try again.",
+                          isStreaming: false,
+                        }
+                      : msg
+                  )
+                );
+                setIsLoading(false);
+                setStreamingMessageId(null);
+              },
+            });
+          } else {
+            throw new Error("Failed to initialize chat: No chat_id received");
+          }
+        } else {
+          console.log("Generating response for existing chat:", currentChatId);
+
+          // Start WebSocket streaming before sending the message
+          startStreaming(currentChatId, {
+            onMessage: (chunk) => {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === aiMessageId
+                    ? { ...msg, content: msg.content + chunk }
+                    : msg
+                )
+              );
+            },
+            onComplete: (fullResponse) => {
+              console.log("Stream complete, full response:", fullResponse);
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === aiMessageId
+                    ? { ...msg, content: fullResponse, isStreaming: false }
+                    : msg
+                )
+              );
+              setIsLoading(false);
+              setStreamingMessageId(null);
+            },
+            onError: (error) => {
+              console.error("Streaming error:", error);
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === aiMessageId
+                    ? {
+                        ...msg,
+                        content: "Error receiving response. Please try again.",
+                        isStreaming: false,
+                      }
+                    : msg
+                )
+              );
+              setIsLoading(false);
+              setStreamingMessageId(null);
+            },
+          });
+
+          // Use existing chat_id for subsequent messages
+          await ResponseGenerator(userMessage, currentChatId);
+        }
+      } catch (error) {
+        console.error("Error sending message:", error);
+
+        // Update the placeholder with error message
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === aiMessageId
+              ? {
+                  ...msg,
+                  content:
+                    error.message ||
+                    "Sorry, I encountered an error while processing your message. Please try again.",
+                  isStreaming: false,
+                }
+              : msg
+          )
+        );
         setIsLoading(false);
-      }, 2000);
+        setStreamingMessageId(null);
+      }
     }
   };
 
@@ -288,9 +460,27 @@ const ChatInterface = () => {
                           ? "18px 18px 4px 18px"
                           : "18px 18px 18px 4px",
                       border: msg.type === "ai" ? "1px solid #3c4043" : "none",
+                      position: "relative",
                     }}
                   >
-                    <Typography variant="body1">{msg.content}</Typography>
+                    <Typography variant="body1">
+                      {msg.content || (msg.isStreaming ? "..." : "")}
+                    </Typography>
+                    {msg.isStreaming && (
+                      <Box
+                        sx={{
+                          display: "inline-block",
+                          ml: 1,
+                          animation: "blink 1.4s infinite both",
+                          "@keyframes blink": {
+                            "0%, 80%, 100%": { opacity: 0 },
+                            "40%": { opacity: 1 },
+                          },
+                        }}
+                      >
+                        ▋
+                      </Box>
+                    )}
                   </Paper>
                 </Box>
                 {msg.type === "user" && (
@@ -425,17 +615,45 @@ const ChatInterface = () => {
               Magure AI can make mistakes. Consider checking important
               information.
             </Typography>
-            <Typography
-              variant="caption"
-              sx={{
-                color: "#9aa0a6",
-                display: "flex",
-                alignItems: "center",
-                gap: 0.5,
-              }}
-            >
-              Using: {selectedModel.toUpperCase().replace("-", " ")}
-            </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+              {chatId && (
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: wsConnected ? "#81c995" : "#f28b82",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 0.5,
+                  }}
+                >
+                  <Box
+                    sx={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      backgroundColor: wsConnected ? "#81c995" : "#f28b82",
+                      animation: wsConnected ? "pulse 2s infinite" : "none",
+                      "@keyframes pulse": {
+                        "0%, 100%": { opacity: 1 },
+                        "50%": { opacity: 0.5 },
+                      },
+                    }}
+                  />
+                  {wsConnected ? "Live" : "Disconnected"}
+                </Typography>
+              )}
+              <Typography
+                variant="caption"
+                sx={{
+                  color: "#9aa0a6",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 0.5,
+                }}
+              >
+                Using: {selectedModel.toUpperCase().replace("-", " ")}
+              </Typography>
+            </Box>
           </Box>
         </Box>
       </Box>
